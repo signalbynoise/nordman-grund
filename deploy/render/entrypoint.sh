@@ -1,8 +1,6 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /repos/gitea/conf /repos/gitea/log /repos/git/repositories /repos/git/lfs
-
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "DATABASE_URL is required for Nordman Grund on Render" >&2
   exit 1
@@ -13,6 +11,9 @@ if [ -z "${GRUND_PUBLIC_ORIGIN:-}" ] && [ -z "${GITEA_ROOT_URL:-}" ]; then
   exit 1
 fi
 
+mkdir -p /repos/gitea/conf /repos/gitea/log /repos/git/repositories /repos/git/lfs
+chown -R git:git /repos
+
 eval "$(/usr/local/bin/render-env.sh)"
 
-exec /usr/bin/entrypoint "$@"
+exec su -s /bin/sh git -c 'exec /usr/bin/entrypoint "$@"' -- "$@"
