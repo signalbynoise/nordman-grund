@@ -45,7 +45,11 @@ export function assertArchiveContentType(type) {
 
 export function isGzipArchiveType(type) {
   const lower = String(type ?? '').toLowerCase();
-  return lower.includes('gzip') || lower.includes('tar');
+  return (
+    lower.includes('gzip') ||
+    lower.includes('tar') ||
+    lower.includes('application/octet-stream')
+  );
 }
 
 export async function listSourceFiles(root) {
