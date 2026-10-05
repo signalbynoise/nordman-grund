@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /repos/gitea/conf /repos/gitea/log /repos/git/repositories /repos/git/lfs
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "DATABASE_URL is required for Nordman Grund on Render" >&2
+  exit 1
+fi
+
+if [ -z "${GRUND_PUBLIC_ORIGIN:-}" ] && [ -z "${GITEA_ROOT_URL:-}" ]; then
+  echo "GRUND_PUBLIC_ORIGIN or GITEA_ROOT_URL is required" >&2
+  exit 1
+fi
+
+eval "$(node /usr/local/bin/render-env.mjs | sed 's/^/export /')"
+
+exec /usr/bin/entrypoint /usr/local/bin/gitea web

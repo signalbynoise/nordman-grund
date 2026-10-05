@@ -1,0 +1,99 @@
+previews:
+  generation: none
+
+databases:
+  - name: nordman-grund-db
+    plan: free
+    region: frankfurt
+    postgresMajorVersion: "16"
+
+envVarGroups:
+  - name: nordman-node
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+
+services:
+  # App source lives on Nordman Grund (Gitea). GitHub is only the Render
+  # bootstrap runner because Render cannot clone the forge directly.
+  - type: web
+    name: nordman-web
+    runtime: static
+    plan: free
+    branch: main
+    repo: https://github.com/signalbynoise/nordman-grund
+    autoDeploy: false
+    buildCommand: node deploy/runtime/fetch-source.mjs && npm ci --prefix .grund-src && npm run build --prefix .grund-src
+    staticPublishPath: .grund-src/dist
+    envVars:
+      - fromGroup: nordman-node
+      - key: GRUND_URL
+        value: https://nordman-grund.onrender.com
+      - key: GRUND_OWNER
+        value: nordman
+      - key: GRUND_NAME
+        value: web
+      - key: GRUND_DEPLOY_TOKEN
+        sync: false
+      - key: VITE_NORDMAN_GRUND_URL
+        value: https://nordman-grund.onrender.com
+      - key: VITE_NORDMAN_CHAT_URL
+        value: https://nordman-chat.onrender.com
+
+  - type: web
+    name: nordman-grund
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    branch: main
+    repo: https://github.com/signalbynoise/nordman-grund
+    autoDeploy: true
+    dockerfilePath: ./deploy/render/Dockerfile
+    healthCheckPath: /api/healthz
+    disk:
+      name: grund-repos
+      mountPath: /repos
+      sizeGB: 25
+    buildFilter:
+      paths:
+        - deploy/render/**
+        - render.yaml
+    envVars:
+      - key: APP_NAME
+        value: Nordman Grund
+      - key: GRUND_PUBLIC_ORIGIN
+        value: https://nordman-grund.onrender.com
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nordman-grund-db
+          property: connectionString
+      - key: GITEA__database__SSL_MODE
+        value: require
+      - key: GITEA__security__INSTALL_LOCK
+        value: "true"
+      - key: MAIL_FROM
+        value: Nordman Grund <hej@nordman.ai>
+
+  - type: web
+    name: nordman-chat
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    branch: main
+    repo: https://github.com/signalbynoise/nordman-grund
+    autoDeploy: false
+    dockerfilePath: ./deploy/runtime/Dockerfile
+    healthCheckPath: /health
+    disk:
+      name: nordman-chat-library
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: GRUND_URL
+        value: https://nordman-grund.onrender.com
+      - key: GRUND_OWNER
+        value: nordman
+      - key: GRUND_NAME
+        value: chat
+      - key: GRUND_DEPLOY_TOKEN
+        sync: false
