@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM docker.io/gitea/gitea:1.28.0-rootless
+FROM docker.io/gitea/gitea:1.27.3-rootless
 
 USER root
 COPY deploy/render/render-env.mjs /usr/local/bin/render-env.mjs
