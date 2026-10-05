@@ -77,7 +77,7 @@ services:
   - type: web
     name: nordman-chat
     runtime: docker
-    plan: starter
+    plan: standard
     region: frankfurt
     branch: main
     repo: https://github.com/signalbynoise/nordman-grund
@@ -95,5 +95,7 @@ services:
         value: nordman
       - key: GRUND_NAME
         value: chat
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=1536
       - key: GRUND_DEPLOY_TOKEN
         sync: false
