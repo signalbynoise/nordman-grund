@@ -15,4 +15,11 @@ fi
 
 eval "$(/usr/local/bin/render-env.sh)"
 
-exec /usr/bin/entrypoint /usr/local/bin/gitea web
+if [ -x /usr/local/bin/gitea ]; then
+  exec /usr/local/bin/gitea web
+fi
+if [ -x /usr/bin/entrypoint ]; then
+  exec /usr/bin/entrypoint /usr/local/bin/gitea web
+fi
+echo "gitea binary not found" >&2
+exit 127
