@@ -16,4 +16,4 @@ chown -R git:git /repos
 
 eval "$(/usr/local/bin/render-env.sh)"
 
-exec su -s /bin/sh git -c 'exec /usr/bin/entrypoint "$@"' -- "$@"
+exec su -p -s /bin/sh git -c 'exec /usr/bin/entrypoint "$@"' -- "$@"
