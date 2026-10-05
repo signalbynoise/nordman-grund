@@ -13,6 +13,6 @@ if [ -z "${GRUND_PUBLIC_ORIGIN:-}" ] && [ -z "${GITEA_ROOT_URL:-}" ]; then
   exit 1
 fi
 
-eval "$(node /usr/local/bin/render-env.mjs | sed 's/^/export /')"
+eval "$(/usr/local/bin/render-env.sh)"
 
 exec /usr/bin/entrypoint /usr/local/bin/gitea web
