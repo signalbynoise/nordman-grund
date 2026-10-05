@@ -24,4 +24,9 @@ run_git() {
 }
 
 run_git "/usr/local/bin/gitea migrate --config \"$config\""
+
+if [ -n "${GRUND_ADMIN_USERNAME:-}" ] && [ -n "${GRUND_ADMIN_PASSWORD:-}" ] && [ -n "${GRUND_ADMIN_EMAIL:-}" ]; then
+  run_git "/usr/local/bin/gitea admin user create --config \"$config\" --username \"$GRUND_ADMIN_USERNAME\" --password \"$GRUND_ADMIN_PASSWORD\" --email \"$GRUND_ADMIN_EMAIL\" --must-change-password=false --admin" || true
+fi
+
 exec su -p -s /bin/sh git -c "export HOME=\"$home\" PGSSLMODE=require; exec /usr/local/bin/gitea web --config \"$config\""
