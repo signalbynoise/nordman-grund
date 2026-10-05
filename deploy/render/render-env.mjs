@@ -38,6 +38,7 @@ const lines = [
   `GITEA__database__NAME=${db.name}`,
   `GITEA__database__USER=${db.user}`,
   `GITEA__database__PASSWD=${db.password}`,
+  `GITEA__database__SCHEMA=${process.env.GITEA__database__SCHEMA ?? 'gitea'}`,
   `GITEA__database__SSL_MODE=${process.env.GITEA__database__SSL_MODE ?? 'require'}`,
   `GITEA__security__INSTALL_LOCK=${process.env.GITEA__security__INSTALL_LOCK ?? 'true'}`,
   `GITEA__service__DISABLE_REGISTRATION=${process.env.GITEA__service__DISABLE_REGISTRATION ?? 'false'}`,
