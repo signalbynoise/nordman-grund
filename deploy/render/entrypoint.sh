@@ -11,9 +11,11 @@ if [ -z "${GRUND_PUBLIC_ORIGIN:-}" ] && [ -z "${GITEA_ROOT_URL:-}" ]; then
   exit 1
 fi
 
-mkdir -p /repos/gitea/conf /repos/gitea/log /repos/git/repositories /repos/git/lfs
+config=/repos/gitea/custom/conf/app.ini
+
+mkdir -p /repos/gitea/custom/conf /repos/gitea/log /repos/git/repositories /repos/git/lfs
+/usr/local/bin/render-write-app-ini.sh "$config"
 chown -R git:git /repos
 
-eval "$(/usr/local/bin/render-env.sh)"
-
-exec su -p -s /bin/sh git -c 'exec /usr/bin/entrypoint "$@"' -- "$@"
+su -p -s /bin/sh git -c "/usr/local/bin/gitea migrate --config \"$config\""
+exec su -p -s /bin/sh git -c "exec /usr/local/bin/gitea web --config \"$config\""
