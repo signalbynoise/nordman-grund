@@ -32,7 +32,7 @@ fi
 
 domain=$(printf '%s' "$root_url" | sed -E 's#^https?://([^/]+).*$#\1#')
 schema="${GITEA__database__SCHEMA:-gitea}"
-ssl_mode="${GITEA__database__SSL_MODE:-require}"
+ssl_mode="${GITEA__database__SSL_MODE:-disable}"
 
 mkdir -p "$(dirname "$target")"
 umask 077
