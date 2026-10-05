@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -43,8 +43,22 @@ const response = await fetchSourceArchive(archiveUrl, token);
 const type = response.headers.get('content-type') ?? '';
 assertArchiveContentType(type);
 
-await rm(outDir, { recursive: true, force: true });
-await mkdir(outDir, { recursive: true });
+async function prepareOutDir(dir) {
+  try {
+    const entries = await readdir(dir);
+    await Promise.all(
+      entries.map((entry) => rm(resolve(dir, entry), { recursive: true, force: true })),
+    );
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      await mkdir(dir, { recursive: true });
+      return;
+    }
+    throw error;
+  }
+}
+
+await prepareOutDir(outDir);
 if (!isGzipArchiveType(type)) {
   throw new Error(`expected tar.gz archive, got ${type || 'unknown'}`);
 }
