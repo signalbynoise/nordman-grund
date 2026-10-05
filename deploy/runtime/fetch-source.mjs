@@ -43,6 +43,7 @@ const response = await fetchSourceArchive(archiveUrl, token);
 const type = response.headers.get('content-type') ?? '';
 assertArchiveContentType(type);
 
+await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 if (!isGzipArchiveType(type)) {
   throw new Error(`expected tar.gz archive, got ${type || 'unknown'}`);
