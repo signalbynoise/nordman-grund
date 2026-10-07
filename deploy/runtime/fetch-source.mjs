@@ -9,6 +9,7 @@ import {
   isGzipArchiveType,
   materializeFetchedSource,
 } from './materialize-source.mjs';
+import { archiveUrl, sourceRevision } from './source-revision.mjs';
 
 const run = promisify(execFile);
 
@@ -33,12 +34,10 @@ const origin = requiredEnv('GRUND_URL').replace(/\/$/, '');
 const owner = requiredEnv('GRUND_OWNER');
 const name = requiredEnv('GRUND_NAME');
 const token = requiredEnv('GRUND_DEPLOY_TOKEN');
-const ref = process.env.GRUND_SOURCE_REF ?? 'main';
+const revision = sourceRevision(process.env.GRUND_SOURCE_REVISION);
 const outDir = resolve(readArg('out', process.env.GRUND_SOURCE_DIR ?? '.grund-src'));
 
-const archiveUrl = `${origin}/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/archive/${encodeURIComponent(ref)}.tar.gz`;
-
-const response = await fetchSourceArchive(archiveUrl, token);
+const response = await fetchSourceArchive(archiveUrl(origin, owner, name, revision), token);
 
 const type = response.headers.get('content-type') ?? '';
 assertArchiveContentType(type);
@@ -70,5 +69,5 @@ await rm(archive, { force: true });
 
 const stamp = await materializeFetchedSource(outDir, name);
 console.error(
-  `[info] [runtime:fetch] extracted ${owner}/${name} { out: ${outDir}, ref: ${ref}, files: ${stamp.files}, hidden: ${stamp.hidden}, flattened: ${stamp.flattened}, assembled: ${stamp.assembled}, installedConfig: ${stamp.installedConfig} }`,
+  `[info] [runtime:fetch] extracted ${owner}/${name} { out: ${outDir}, ref: ${revision}, revision: ${revision}, files: ${stamp.files}, hidden: ${stamp.hidden}, flattened: ${stamp.flattened}, assembled: ${stamp.assembled}, installedConfig: ${stamp.installedConfig} }`,
 );

@@ -13,7 +13,7 @@ ARG NPM_CI_ATTEMPTS=2
 RUN mkdir -p /app && chown node:node /app
 WORKDIR /app
 
-COPY deploy/runtime/fetch-source.mjs deploy/runtime/materialize-source.mjs deploy/runtime/fetch-archive.mjs /runtime/
+COPY deploy/runtime/fetch-source.mjs deploy/runtime/materialize-source.mjs deploy/runtime/fetch-archive.mjs deploy/runtime/source-revision.mjs /runtime/
 
 ARG GRUND_URL
 ARG GRUND_DEPLOY_TOKEN
@@ -28,7 +28,8 @@ ENV GRUND_SOURCE_REVISION=$GRUND_SOURCE_REVISION
 
 USER node
 
-RUN node /runtime/fetch-source.mjs --out /app
+RUN echo "grund-source-revision ${GRUND_SOURCE_REVISION}" \
+ && node /runtime/fetch-source.mjs --out /app
 
 RUN \
     touch .env ; \

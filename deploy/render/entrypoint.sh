@@ -18,6 +18,36 @@ mkdir -p /repos/gitea/custom/conf /repos/gitea/log /repos/git/repositories /repo
 /usr/local/bin/render-write-app-ini.sh "$config"
 chown -R git:git /repos
 
+if [ -n "${RENDER_API_KEY:-}" ]; then
+  python3 - <<'PY'
+import os
+path = "/repos/gitea/custom/release.env"
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write("RENDER_API_KEY=%s\n" % os.environ["RENDER_API_KEY"])
+    workspace = os.environ.get("RENDER_WORKSPACE_ID", "")
+    if workspace:
+        handle.write("RENDER_WORKSPACE_ID=%s\n" % workspace)
+os.chmod(path, 0o600)
+PY
+  chown git:git /repos/gitea/custom/release.env
+fi
+
+install_release_hook() {
+  dir="$1"
+  mkdir -p "$dir"
+  cp /usr/local/bin/nordman-release-on-push.sh "$dir/00-nordman-release"
+  chown git:git "$dir/00-nordman-release"
+  chmod 755 "$dir/00-nordman-release"
+}
+
+install_release_hook /repos/gitea/custom/hooks/post-receive.d
+if [ -d /repos/git/repositories ]; then
+  find /repos/git/repositories -type d -name post-receive.d | while read -r dir; do
+    install_release_hook "$dir"
+  done
+fi
+echo "[info] [grund:release] hooks installed"
+
 run_git() {
   # su -p keeps DATABASE_URL; HOME must not be /root or libpq breaks SSL on migrate.
   su -p -s /bin/sh git -c "export HOME=\"$home\" PGSSLMODE=require; $*"
