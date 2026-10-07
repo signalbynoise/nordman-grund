@@ -40,13 +40,28 @@ install_release_hook() {
   chmod 755 "$dir/00-nordman-release"
 }
 
-install_release_hook /repos/gitea/custom/hooks/post-receive.d
+# Gitea creates hooks/<name>.d when a repository is initialized, and the
+# generated post-receive script runs every executable in that directory.
+# Install into every bare repo, including ones whose directory does not
+# exist yet, so a later Gitea hook sync keeps this script beside its own.
+count=0
 if [ -d /repos/git/repositories ]; then
-  find /repos/git/repositories -type d -name post-receive.d | while read -r dir; do
-    install_release_hook "$dir"
-  done
+  find /repos/git/repositories -type f -name HEAD > /tmp/nordman-release-repos
+  while read -r head; do
+    repo="$(dirname "$head")"
+    case "$repo" in
+      */hooks/*) continue ;;
+    esac
+    if [ ! -d "$repo/objects" ]; then
+      continue
+    fi
+    install_release_hook "$repo/hooks/post-receive.d"
+    echo "[info] [grund:release] hook $(basename "$repo")"
+    count=$((count + 1))
+  done < /tmp/nordman-release-repos
+  rm -f /tmp/nordman-release-repos
 fi
-echo "[info] [grund:release] hooks installed"
+echo "[info] [grund:release] hooks installed count=$count"
 
 run_git() {
   # su -p keeps DATABASE_URL; HOME must not be /root or libpq breaks SSL on migrate.
