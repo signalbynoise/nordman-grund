@@ -96,6 +96,12 @@ class ReleaseRevisionTest(unittest.TestCase):
         self.assertFalse(fetched_revision(cached, SHA))
         self.assertTrue(fetched_revision(fetched, SHA))
         self.assertFalse(fetched_revision(fetched, OLDER))
+        cached_this_sha = [
+            f'#11 [stage-0  8/10] RUN echo "grund-source-revision {SHA}" && node /runtime/fetch-source.mjs --out /app',
+            "#11 CACHED",
+        ]
+        self.assertTrue(fetched_revision(cached_this_sha, SHA))
+        self.assertFalse(fetched_revision(cached_this_sha, OLDER))
 
 
 if __name__ == "__main__":

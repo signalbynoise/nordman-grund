@@ -161,6 +161,18 @@ def in_progress(deploys: list[dict]) -> bool:
     return any(item.get("status") not in TERMINAL for item in deploys)
 
 
+def live_has_revision(render: Render, service_id: str, sha: str) -> bool:
+    for deploy in render.deploys(service_id):
+        if deploy.get("status") != "live":
+            continue
+        start = deploy.get("startedAt") or deploy.get("createdAt")
+        end = deploy.get("finishedAt")
+        if not start or not end:
+            return False
+        return fetched_revision(render.logs(service_id, start, end), sha)
+    return False
+
+
 def pin_and_deploy(render: Render, service: str, sha: str) -> str:
     if not SHA.fullmatch(sha):
         raise RuntimeError("revision must be the full commit SHA")
@@ -169,7 +181,9 @@ def pin_and_deploy(render: Render, service: str, sha: str) -> str:
         (item["value"] for item in render.env_vars(service_id) if item["key"] == "GRUND_SOURCE_REVISION"),
         "",
     )
-    if current == sha and in_progress(render.deploys(service_id)):
+    if current == sha and (
+        in_progress(render.deploys(service_id)) or live_has_revision(render, service_id, sha)
+    ):
         return "already"
     if current != sha:
         vars = render.env_vars(service_id)
@@ -187,16 +201,21 @@ def strip_ansi(text: str) -> str:
 def fetched_revision(messages: list[str], sha: str) -> bool:
     lines = [strip_ansi(line) for line in messages]
     step = None
+    instruction = ""
     saw_revision = False
     cached = False
     for line in lines:
         if "fetch-source.mjs" in line and line.lstrip().startswith("#"):
             step = line.split()[0]
+            instruction = line
         if step and line.startswith(f"{step} ") and "CACHED" in line:
             cached = True
         if f"revision: {sha}" in line:
             saw_revision = True
-    return saw_revision and not cached
+    # A cached step is that commit only when the fetch instruction itself contains the SHA.
+    if cached:
+        return sha in instruction
+    return saw_revision
 
 
 def verify(render: Render, service: str, sha: str, since: str = "", timeout_s: int = 1500) -> dict:
@@ -291,6 +310,7 @@ def main(argv: list[str]) -> int:
     for service, sha in pairs:
         try:
             outcome = pin_and_deploy(render, service, sha)
+            print(outcome)
             print(f"[info] [grund:release] {service} {sha} {outcome}", file=sys.stderr)
         except Exception as error:
             failed = True
