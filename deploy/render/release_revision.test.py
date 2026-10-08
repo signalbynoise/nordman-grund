@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 import unittest
 
-from release_revision import fetched_revision, parse_push, pin_and_deploy, service_name
+from release_revision import (
+    fetched_revision,
+    parse_push,
+    pin_and_deploy,
+    service_from_names,
+    service_name,
+)
 
 SHA = "8358cb61109041c00fbb9e9a48f5d30cc72a6e32"
 OLDER = "8ddb0554a00ac5bcc4f0eddc0b04529222ca560d"
@@ -46,6 +52,20 @@ class ReleaseRevisionTest(unittest.TestCase):
         self.assertEqual(parse_push(git_dir, f"old {SHA} refs/heads/topic\n"), [])
         self.assertEqual(parse_push("/tmp/notes.git", text), [])
         self.assertEqual(service_name("/repos/git/repositories/Nordman/web.git"), "nordman-web")
+
+    def test_bare_repo_hook_uses_cwd_when_git_dir_is_dot(self):
+        text = f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {SHA} refs/heads/main\n"
+        cwd = "/repos/git/repositories/nordman/chat.git"
+        self.assertEqual(parse_push(".", text, cwd), [("nordman-chat", SHA)])
+        self.assertIsNone(service_name(".", "/tmp"))
+
+    def test_gitea_hook_environment_names_the_repository(self):
+        text = f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {SHA} refs/heads/main\n"
+        self.assertEqual(
+            parse_push(".", text, "/tmp", "Nordman", "chat"),
+            [("nordman-chat", SHA)],
+        )
+        self.assertIsNone(service_from_names("Nordman", "chat.wiki"))
 
     def test_new_sha_updates_the_pin_and_starts_a_build(self):
         render = FakeRender(revision=OLDER, deploys=[{"id": "old", "status": "live"}])

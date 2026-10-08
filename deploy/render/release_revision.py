@@ -103,8 +103,31 @@ class Render:
             params["endTime"] = body.get("nextEndTime") or end
 
 
-def service_name(git_dir: str) -> str | None:
-    path = git_dir.replace("\\", "/").rstrip("/").lower()
+def service_from_names(owner: str, name: str) -> str | None:
+    repo_name = name.strip().lower()
+    if repo_name.endswith(".wiki"):
+        return None
+    if owner.strip().lower() == "nordman" and repo_name in SERVICES:
+        return SERVICES[repo_name]
+    return None
+
+
+def repository_path(git_dir: str, cwd: str) -> str:
+    raw = git_dir.strip()
+    if raw in ("", "."):
+        return cwd
+    if os.path.isabs(raw):
+        return raw
+    return os.path.normpath(os.path.join(cwd, raw))
+
+
+def service_name(git_dir: str, cwd: str = "", owner: str = "", repo: str = "") -> str | None:
+    # Git sets GIT_DIR=. for a bare repo and runs the hook with that repo as cwd.
+    # Gitea also exports GITEA_REPO_USER_NAME and GITEA_REPO_NAME for custom hooks.
+    named = service_from_names(owner, repo)
+    if named:
+        return named
+    path = repository_path(git_dir, cwd).replace("\\", "/").rstrip("/").lower()
     if path.endswith(".git"):
         path = path[:-4]
     parts = [part for part in path.split("/") if part]
@@ -113,8 +136,14 @@ def service_name(git_dir: str) -> str | None:
     return None
 
 
-def parse_push(git_dir: str, text: str) -> list[tuple[str, str]]:
-    service = service_name(git_dir)
+def parse_push(
+    git_dir: str,
+    text: str,
+    cwd: str = "",
+    owner: str = "",
+    repo: str = "",
+) -> list[tuple[str, str]]:
+    service = service_name(git_dir, cwd, owner, repo)
     if not service:
         return []
     releases = []
@@ -234,10 +263,23 @@ def main(argv: list[str]) -> int:
     git_dir = os.environ.get("GIT_DIR", "")
     forced = os.environ.get("NORDMAN_RELEASE_SHA", "").strip()
     if forced:
-        service = os.environ.get("NORDMAN_RELEASE_SERVICE") or service_name(git_dir)
+        service = os.environ.get("NORDMAN_RELEASE_SERVICE") or service_name(
+            git_dir,
+            os.getcwd(),
+            os.environ.get("GITEA_REPO_USER_NAME", ""),
+            os.environ.get("GITEA_REPO_NAME", ""),
+        )
         pairs = [(service, forced)] if service else []
     else:
-        pairs = parse_push(git_dir, sys.stdin.read())
+        text = sys.stdin.read()
+        owner = os.environ.get("GITEA_REPO_USER_NAME", "")
+        repo = os.environ.get("GITEA_REPO_NAME", "")
+        pairs = parse_push(git_dir, text, os.getcwd(), owner, repo)
+        if not pairs and "refs/heads/main" in text:
+            print(
+                f"[warn] [grund:release] main push was not released owner={owner or '-'} repo={repo or '-'} git_dir={git_dir or '-'}",
+                file=sys.stderr,
+            )
     if not pairs:
         return 0
     key = os.environ.get("RENDER_API_KEY")
