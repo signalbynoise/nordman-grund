@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Pin a Grund commit on its Render service and build that commit.
 
-A push of chat or web main calls this from Gitea's post-receive hook.
-publish.sh calls the same script. The build argument is the commit SHA, so
-Docker cannot reuse a fetch of an older tree.
+A push of chat or web main calls this from Gitea's post-receive hook and
+redeploys that existing service. A push of main on any other repo whose
+topics include nordman-app creates or updates one free static site named
+exactly as the repo, serving that commit's tree at https://{repo}.onrender.com.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -28,12 +30,27 @@ TERMINAL = {
     "pre_deploy_failed",
 }
 SERVICES = {"chat": "nordman-chat", "web": "nordman-web"}
+APP_TOPIC = "nordman-app"
+APP_SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+PROTECTED_SERVICES = {"nordman-grund", "nordman-chat", "nordman-web"}
+BOOTSTRAP_REPO = "https://github.com/signalbynoise/nordman-grund"
+APP_BUILD = "node deploy/render/publish-app-site.mjs"
+APP_PUBLISH_PATH = ".nordman-site"
+DEFAULT_ORIGIN = "https://nordman-grund.onrender.com"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class Render:
     def __init__(self, api_key: str):
         self.api_key = api_key
+        self.redactions = [api_key]
+
+    def redact(self, text: str) -> str:
+        redacted = text
+        for secret in self.redactions:
+            if secret:
+                redacted = redacted.replace(secret, "[redacted]")
+        return redacted
 
     def request(self, method: str, path: str, body=None):
         data = None if body is None else json.dumps(body).encode()
@@ -52,17 +69,40 @@ class Render:
                 raw = response.read()
                 return response.status, json.loads(raw) if raw else None
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:200]
+            detail = self.redact(error.read().decode("utf-8", "replace")[:200])
             raise RuntimeError(f"render {method} {path} {error.code} {detail}") from error
 
     def find_service(self, name: str) -> str:
+        service_id = self.find_service_id(name)
+        if not service_id:
+            raise RuntimeError(f"missing service {name}")
+        return service_id
+
+    def find_service_id(self, name: str) -> str | None:
         query = urllib.parse.urlencode({"name": name, "limit": "20"})
         _status, body = self.request("GET", f"/services?{query}")
         for row in body or []:
             service = row.get("service", row)
             if service.get("name") == name:
                 return service["id"]
-        raise RuntimeError(f"missing service {name}")
+        return None
+
+    def service_url(self, service_id: str) -> str:
+        _status, body = self.request("GET", f"/services/{service_id}")
+        service = body.get("service", body) if isinstance(body, dict) else {}
+        details = service.get("serviceDetails") or {}
+        return str(details.get("url") or "")
+
+    def create_static_site(self, payload: dict) -> str:
+        _status, body = self.request("POST", "/services", payload)
+        service = body.get("service", body) if isinstance(body, dict) else {}
+        service_id = service.get("id")
+        if not service_id:
+            raise RuntimeError("render did not return a service id")
+        return service_id
+
+    def delete_service(self, service_id: str) -> None:
+        self.request("DELETE", f"/services/{service_id}")
 
     def env_vars(self, service_id: str) -> list[dict]:
         _status, body = self.request("GET", f"/services/{service_id}/env-vars?limit=100")
@@ -112,6 +152,107 @@ def service_from_names(owner: str, name: str) -> str | None:
     return None
 
 
+def parse_topics(value: str) -> list[str]:
+    return [part.strip().lower() for part in value.split(",") if part.strip()]
+
+
+def app_service_name(owner: str, repo: str, topics: list[str]) -> str | None:
+    # Platform repos keep their existing services. An app site is the repo name
+    # itself, which is the hostname Chat already promised.
+    name = repo.strip()
+    if service_from_names(owner, name) or name.lower().endswith(".wiki"):
+        return None
+    if name in PROTECTED_SERVICES or name.lower() in PROTECTED_SERVICES:
+        return None
+    if APP_TOPIC not in {topic.strip().lower() for topic in topics}:
+        return None
+    if not APP_SLUG.fullmatch(name):
+        return None
+    return name
+
+
+def main_shas(text: str) -> list[str]:
+    found = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[2] != "refs/heads/main":
+            continue
+        new = parts[1].strip()
+        if SHA.fullmatch(new):
+            found.append(new)
+    return found
+
+
+def app_env(origin: str, owner: str, name: str, sha: str, token: str) -> dict[str, str]:
+    return {
+        "GRUND_URL": origin.rstrip("/"),
+        "GRUND_OWNER": owner,
+        "GRUND_NAME": name,
+        "GRUND_DEPLOY_TOKEN": token,
+        "GRUND_SOURCE_REVISION": sha,
+        "NODE_VERSION": "22",
+    }
+
+
+def static_site_payload(name: str, owner: str, sha: str, token: str, origin: str, workspace: str) -> dict:
+    return {
+        "type": "static_site",
+        "name": name,
+        "ownerId": workspace,
+        "repo": BOOTSTRAP_REPO,
+        "branch": "main",
+        "autoDeploy": "no",
+        "autoDeployTrigger": "off",
+        "envVars": [{"key": key, "value": value} for key, value in app_env(origin, owner, name, sha, token).items()],
+        "serviceDetails": {
+            "buildCommand": APP_BUILD,
+            "publishPath": APP_PUBLISH_PATH,
+            "pullRequestPreviewsEnabled": "no",
+            "previews": {"generation": "off"},
+            "renderSubdomainPolicy": "enabled",
+            "headers": [
+                {"path": "/", "name": "Cache-Control", "value": "no-cache"},
+                {"path": "/index.html", "name": "Cache-Control", "value": "no-cache"},
+            ],
+        },
+    }
+
+
+def upsert_env(render: Render, service_id: str, values: dict[str, str]) -> bool:
+    current = render.env_vars(service_id)
+    merged = [item for item in current if item["key"] not in values]
+    changed = False
+    for key, value in values.items():
+        old = next((item["value"] for item in current if item["key"] == key), None)
+        if old != value:
+            changed = True
+        merged.append({"key": key, "value": value})
+    if changed:
+        render.put_env(service_id, merged)
+    return changed
+
+
+def ensure_app_site(render: Render, name: str, owner: str, sha: str, token: str, origin: str, workspace: str) -> str:
+    if not SHA.fullmatch(sha):
+        raise RuntimeError("revision must be the full commit SHA")
+    expected = f"https://{name}.onrender.com"
+    render.redactions.append(token)
+    service_id = render.find_service_id(name)
+    created = service_id is None
+    if created:
+        service_id = render.create_static_site(static_site_payload(name, owner, sha, token, origin, workspace))
+    url = render.service_url(service_id).rstrip("/")
+    if url != expected:
+        if created:
+            render.delete_service(service_id)
+        raise RuntimeError(f"{name} is {url or 'missing'}, expected {expected}")
+    upsert_env(render, service_id, app_env(origin, owner, name, sha, token))
+    outcome = pin_and_deploy(render, name, sha)
+    if created:
+        return "created"
+    return outcome
+
+
 def repository_path(git_dir: str, cwd: str) -> str:
     raw = git_dir.strip()
     if raw in ("", "."):
@@ -146,15 +287,7 @@ def parse_push(
     service = service_name(git_dir, cwd, owner, repo)
     if not service:
         return []
-    releases = []
-    for line in text.splitlines():
-        parts = line.split()
-        if len(parts) < 3 or parts[2] != "refs/heads/main":
-            continue
-        new = parts[1].strip()
-        if SHA.fullmatch(new):
-            releases.append((service, new))
-    return releases
+    return [(service, sha) for sha in main_shas(text)]
 
 
 def in_progress(deploys: list[dict]) -> bool:
@@ -265,8 +398,125 @@ def load_release_env() -> None:
             os.environ.setdefault(key, value)
 
 
+def grund_origin() -> str:
+    return os.environ.get("GRUND_PUBLIC_ORIGIN", DEFAULT_ORIGIN).rstrip("/")
+
+
+def workspace_id() -> str:
+    return os.environ.get("RENDER_WORKSPACE_ID", "tea-csp7qr3gbbvc73d1fvqg")
+
+
+def deploy_token(render: Render) -> str:
+    service_id = render.find_service("nordman-web")
+    token = next(
+        (item["value"] for item in render.env_vars(service_id) if item["key"] == "GRUND_DEPLOY_TOKEN"),
+        "",
+    )
+    if token:
+        render.redactions.append(token)
+    return token
+
+
+def gitea_topics(origin: str, token: str, owner: str, repo: str) -> list[str]:
+    quoted = f"{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+    req = urllib.request.Request(
+        f"{origin}/api/v1/repos/{quoted}",
+        headers={"Authorization": f"token {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            body = json.loads(response.read().decode() or "{}")
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"grund topics {error.code}") from error
+    topics = body.get("topics") if isinstance(body, dict) else None
+    if not isinstance(topics, list):
+        return []
+    return [str(topic).strip().lower() for topic in topics if str(topic).strip()]
+
+
+def topics_for_repo(render: Render, owner: str, repo: str, token: str) -> list[str]:
+    if "GITEA_REPO_TOPICS" in os.environ:
+        topics = parse_topics(os.environ["GITEA_REPO_TOPICS"])
+        if APP_TOPIC in topics:
+            return topics
+    if not token:
+        if "GITEA_REPO_TOPICS" in os.environ:
+            return parse_topics(os.environ["GITEA_REPO_TOPICS"])
+        return []
+    return gitea_topics(grund_origin(), token, owner, repo)
+
+
+def schedule_topic_recheck(owner: str, repo: str, sha: str) -> None:
+    # The contents API push finishes before Chat's topic update. Look again
+    # after this hook returns so that later topic write still publishes.
+    if os.environ.get("NORDMAN_APP_RECHECK") == "1":
+        return
+    env = os.environ.copy()
+    env["NORDMAN_APP_RECHECK"] = "1"
+    env["NORDMAN_RELEASE_SHA"] = sha
+    env["GITEA_REPO_USER_NAME"] = owner
+    env["GITEA_REPO_NAME"] = repo
+    env.pop("GITEA_REPO_TOPICS", None)
+    log_path = os.environ.get("NORDMAN_APP_RECHECK_LOG", "/repos/gitea/log/app-release.log")
+    log = subprocess.DEVNULL
+    try:
+        log = open(log_path, "a", encoding="utf-8")
+    except OSError:
+        log = subprocess.DEVNULL
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "--app-recheck"],
+        env=env,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
+    )
+    if log is not subprocess.DEVNULL:
+        log.close()
+
+
+def release_targets(render: Render, services: list[tuple[str, str]], owner: str, repo: str, shas: list[str]) -> int:
+    failed = False
+    for service, sha in services:
+        try:
+            outcome = pin_and_deploy(render, service, sha)
+            print(outcome)
+            print(f"[info] [grund:release] {service} {sha} {outcome}", file=sys.stderr)
+        except Exception as error:
+            failed = True
+            print(f"[warn] [grund:release] {service} {render.redact(str(error))}", file=sys.stderr)
+    if services or not shas or not app_service_name(owner, repo, [APP_TOPIC]):
+        return 1 if failed and os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
+    try:
+        token = deploy_token(render)
+        topics = topics_for_repo(render, owner, repo, token)
+    except Exception as error:
+        failed = True
+        print(f"[warn] [grund:release] {repo} {render.redact(str(error))}", file=sys.stderr)
+        return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
+    name = app_service_name(owner, repo, topics)
+    if not name:
+        for sha in shas:
+            schedule_topic_recheck(owner, repo, sha)
+        return 0
+    if not token:
+        print("[warn] [grund:release] GRUND_DEPLOY_TOKEN is not set", file=sys.stderr)
+        return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
+    for sha in shas:
+        try:
+            outcome = ensure_app_site(render, name, owner, sha, token, grund_origin(), workspace_id())
+            print(outcome)
+            print(f"[info] [grund:release] {name} {sha} {outcome}", file=sys.stderr)
+        except Exception as error:
+            failed = True
+            print(f"[warn] [grund:release] {name} {render.redact(str(error))}", file=sys.stderr)
+    return 1 if failed and os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
+
+
 def main(argv: list[str]) -> int:
     load_release_env()
+    if len(argv) >= 2 and argv[1] == "--app-recheck":
+        time.sleep(8)
     if len(argv) >= 3 and argv[1] == "--verify":
         key = os.environ.get("RENDER_API_KEY")
         if not key:
@@ -280,44 +530,32 @@ def main(argv: list[str]) -> int:
         return 0
 
     git_dir = os.environ.get("GIT_DIR", "")
+    owner = os.environ.get("GITEA_REPO_USER_NAME", "")
+    repo = os.environ.get("GITEA_REPO_NAME", "")
     forced = os.environ.get("NORDMAN_RELEASE_SHA", "").strip()
+    text = ""
     if forced:
-        service = os.environ.get("NORDMAN_RELEASE_SERVICE") or service_name(
-            git_dir,
-            os.getcwd(),
-            os.environ.get("GITEA_REPO_USER_NAME", ""),
-            os.environ.get("GITEA_REPO_NAME", ""),
-        )
-        pairs = [(service, forced)] if service else []
+        service = os.environ.get("NORDMAN_RELEASE_SERVICE") or service_name(git_dir, os.getcwd(), owner, repo)
+        pairs = [(service, forced)] if service and SHA.fullmatch(forced) else []
+        shas = [forced] if SHA.fullmatch(forced) else []
     else:
         text = sys.stdin.read()
-        owner = os.environ.get("GITEA_REPO_USER_NAME", "")
-        repo = os.environ.get("GITEA_REPO_NAME", "")
         pairs = parse_push(git_dir, text, os.getcwd(), owner, repo)
-        if not pairs and "refs/heads/main" in text:
+        shas = main_shas(text)
+        if not pairs and service_name(git_dir, os.getcwd(), owner, repo) and "refs/heads/main" in text:
             print(
-                f"[warn] [grund:release] main push was not released owner={owner or '-'} repo={repo or '-'} git_dir={git_dir or '-'}",
+                f"[warn] [grund:release] main push was not released owner={owner or '-'} repo={repo or '-'}",
                 file=sys.stderr,
             )
-    if not pairs:
+    if not pairs and not shas:
         return 0
     key = os.environ.get("RENDER_API_KEY")
     if not key:
-        print("[warn] [grund:release] RENDER_API_KEY is not set", file=sys.stderr)
-        return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
-    render = Render(key)
-    failed = False
-    for service, sha in pairs:
-        try:
-            outcome = pin_and_deploy(render, service, sha)
-            print(outcome)
-            print(f"[info] [grund:release] {service} {sha} {outcome}", file=sys.stderr)
-        except Exception as error:
-            failed = True
-            print(f"[warn] [grund:release] {service} {error}", file=sys.stderr)
-    if failed and os.environ.get("NORDMAN_RELEASE_STRICT") == "1":
-        return 1
-    return 0
+        if pairs or app_service_name(owner, repo, [APP_TOPIC]):
+            print("[warn] [grund:release] RENDER_API_KEY is not set", file=sys.stderr)
+            return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
+        return 0
+    return release_targets(Render(key), pairs, owner, repo, shas)
 
 
 if __name__ == "__main__":

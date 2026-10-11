@@ -2,11 +2,14 @@
 import unittest
 
 from release_revision import (
+    app_service_name,
+    ensure_app_site,
     fetched_revision,
     parse_push,
     pin_and_deploy,
     service_from_names,
     service_name,
+    static_site_payload,
 )
 
 SHA = "8358cb61109041c00fbb9e9a48f5d30cc72a6e32"
@@ -102,6 +105,136 @@ class ReleaseRevisionTest(unittest.TestCase):
         ]
         self.assertTrue(fetched_revision(cached_this_sha, SHA))
         self.assertFalse(fetched_revision(cached_this_sha, OLDER))
+
+
+class AppRender:
+    def __init__(self, service_id=None, revision="", url="https://clipshare.onrender.com", deploys=None):
+        self.service_id = service_id
+        self.url = url
+        self.env = []
+        if revision:
+            self.env.append({"key": "GRUND_SOURCE_REVISION", "value": revision})
+        self.env.append({"key": "GRUND_URL", "value": "https://nordman-grund.onrender.com"})
+        self._deploys = list(deploys or [])
+        self.created = []
+        self.deleted = []
+        self.triggers = 0
+        self.redactions = []
+
+    def find_service_id(self, _name):
+        return self.service_id
+
+    def find_service(self, name):
+        if not self.service_id:
+            raise RuntimeError(f"missing service {name}")
+        return self.service_id
+
+    def service_url(self, _service_id):
+        return self.url
+
+    def create_static_site(self, payload):
+        self.created.append(payload)
+        self.service_id = "srv-clipshare"
+        return self.service_id
+
+    def delete_service(self, service_id):
+        self.deleted.append(service_id)
+
+    def env_vars(self, _service_id):
+        return list(self.env)
+
+    def put_env(self, _service_id, vars):
+        self.env = list(vars)
+
+    def deploys(self, _service_id):
+        return list(self._deploys)
+
+    def trigger(self, _service_id):
+        self.triggers += 1
+        self._deploys.insert(0, {"id": "dep-new", "status": "build_in_progress", "createdAt": "2026-10-11T00:00:00Z"})
+
+    def logs(self, *_args):
+        return []
+
+
+class AppSiteTest(unittest.TestCase):
+    def test_topic_selects_the_repo_name_and_leaves_other_repos_alone(self):
+        self.assertEqual(app_service_name("eriklydecker", "clipshare", ["nordman-app"]), "clipshare")
+        self.assertIsNone(app_service_name("eriklydecker", "clipshare", []))
+        self.assertIsNone(app_service_name("Nordman", "chat", ["nordman-app"]))
+        self.assertIsNone(app_service_name("Nordman", "web", ["nordman-app"]))
+        self.assertIsNone(app_service_name("eriklydecker", "nordman-grund", ["nordman-app"]))
+        self.assertIsNone(app_service_name("eriklydecker", "ClipShare", ["nordman-app"]))
+
+    def test_first_push_creates_one_free_static_site_named_as_the_repo(self):
+        render = AppRender()
+        outcome = ensure_app_site(
+            render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com/", "tea-workspace"
+        )
+        self.assertEqual(outcome, "created")
+        self.assertEqual(len(render.created), 1)
+        payload = render.created[0]
+        self.assertEqual(payload["type"], "static_site")
+        self.assertEqual(payload["name"], "clipshare")
+        self.assertEqual(payload["autoDeploy"], "no")
+        self.assertNotIn("plan", payload)
+        self.assertEqual(payload["repo"], "https://github.com/signalbynoise/nordman-grund")
+        self.assertEqual(payload["serviceDetails"]["publishPath"], ".nordman-site")
+        self.assertEqual(payload["serviceDetails"]["buildCommand"], "node deploy/render/publish-app-site.mjs")
+        env = {item["key"]: item["value"] for item in render.env}
+        self.assertEqual(env["GRUND_NAME"], "clipshare")
+        self.assertEqual(env["GRUND_OWNER"], "eriklydecker")
+        self.assertEqual(env["GRUND_SOURCE_REVISION"], SHA)
+        self.assertEqual(env["GRUND_URL"], "https://nordman-grund.onrender.com")
+        self.assertEqual(render.triggers, 1)
+
+    def test_later_push_updates_the_same_service(self):
+        render = AppRender(service_id="srv-clipshare", revision=OLDER)
+        outcome = ensure_app_site(
+            render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+        )
+        self.assertEqual(outcome, "started")
+        self.assertEqual(render.created, [])
+        self.assertEqual(render.deleted, [])
+        self.assertEqual(render.service_id, "srv-clipshare")
+        self.assertEqual(render.triggers, 1)
+        env = {item["key"]: item["value"] for item in render.env}
+        self.assertEqual(env["GRUND_SOURCE_REVISION"], SHA)
+        self.assertEqual(env["GRUND_URL"], "https://nordman-grund.onrender.com")
+
+    def test_same_revision_already_building_does_not_trigger(self):
+        render = AppRender(
+            service_id="srv-clipshare",
+            revision=SHA,
+            deploys=[{"id": "dep", "status": "build_in_progress"}],
+        )
+        render.env.append({"key": "GRUND_OWNER", "value": "eriklydecker"})
+        render.env.append({"key": "GRUND_NAME", "value": "clipshare"})
+        render.env.append({"key": "GRUND_DEPLOY_TOKEN", "value": "deploy-token"})
+        render.env.append({"key": "NODE_VERSION", "value": "22"})
+        outcome = ensure_app_site(
+            render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+        )
+        self.assertEqual(outcome, "already")
+        self.assertEqual(render.triggers, 0)
+        self.assertEqual(render.created, [])
+
+    def test_wrong_hostname_is_not_kept(self):
+        render = AppRender(url="https://clipshare-abcd.onrender.com")
+        with self.assertRaises(RuntimeError):
+            ensure_app_site(
+                render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+            )
+        self.assertEqual(render.deleted, ["srv-clipshare"])
+        self.assertEqual(render.triggers, 0)
+
+    def test_payload_pins_the_commit_the_site_must_fetch(self):
+        payload = static_site_payload(
+            "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+        )
+        values = {item["key"]: item["value"] for item in payload["envVars"]}
+        self.assertEqual(values["GRUND_SOURCE_REVISION"], SHA)
+        self.assertNotIn("plan", payload["serviceDetails"])
 
 
 if __name__ == "__main__":

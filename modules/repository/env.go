@@ -20,6 +20,7 @@ const (
 	EnvRepoUsername = "GITEA_REPO_USER_NAME" // owner name
 	EnvRepoID       = "GITEA_REPO_ID"
 	EnvRepoIsWiki   = "GITEA_REPO_IS_WIKI"
+	EnvRepoTopics   = "GITEA_REPO_TOPICS" // comma-separated; empty when the repo has none
 
 	EnvKeyID = "GITEA_KEY_ID" // public key ID
 
@@ -64,6 +65,7 @@ func DoerPushingEnvironment(doer *user_model.User, repo *repo_model.Repository, 
 		EnvRepoUsername + "=" + repo.OwnerName,
 		EnvRepoID + "=" + strconv.FormatInt(repo.ID, 10),
 		EnvRepoIsWiki + "=" + strconv.FormatBool(isWiki),
+		EnvRepoTopics + "=" + strings.Join(repo.Topics, ","),
 		EnvPusherName + "=" + doer.Name,
 		EnvPusherID + "=" + strconv.FormatInt(doer.ID, 10),
 	}
