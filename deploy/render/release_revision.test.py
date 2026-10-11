@@ -176,7 +176,8 @@ class AppSiteTest(unittest.TestCase):
         payload = render.created[0]
         self.assertEqual(payload["type"], "static_site")
         self.assertEqual(payload["name"], "clipshare")
-        self.assertEqual(payload["autoDeploy"], "no")
+        self.assertEqual(payload["autoDeployTrigger"], "off")
+        self.assertNotIn("autoDeploy", payload)
         self.assertNotIn("plan", payload)
         self.assertEqual(payload["repo"], "https://github.com/signalbynoise/nordman-grund")
         self.assertEqual(payload["serviceDetails"]["publishPath"], ".nordman-site")

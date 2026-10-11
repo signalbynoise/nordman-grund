@@ -201,7 +201,6 @@ def static_site_payload(name: str, owner: str, sha: str, token: str, origin: str
         "ownerId": workspace,
         "repo": BOOTSTRAP_REPO,
         "branch": "main",
-        "autoDeploy": "no",
         "autoDeployTrigger": "off",
         "envVars": [{"key": key, "value": value} for key, value in app_env(origin, owner, name, sha, token).items()],
         "serviceDetails": {
