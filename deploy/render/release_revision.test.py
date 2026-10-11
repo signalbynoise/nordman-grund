@@ -3,6 +3,7 @@ import unittest
 
 from release_revision import (
     app_service_name,
+    default_app_service_name,
     ensure_app_site,
     fetched_revision,
     parse_push,
@@ -11,6 +12,8 @@ from release_revision import (
     service_name,
     static_site_payload,
 )
+
+SITE = "nordman-eriklydecker-clipshare"
 
 SHA = "8358cb61109041c00fbb9e9a48f5d30cc72a6e32"
 OLDER = "8ddb0554a00ac5bcc4f0eddc0b04529222ca560d"
@@ -108,7 +111,7 @@ class ReleaseRevisionTest(unittest.TestCase):
 
 
 class AppRender:
-    def __init__(self, service_id=None, revision="", url="https://clipshare.onrender.com", deploys=None):
+    def __init__(self, service_id=None, revision="", url=f"https://{SITE}.onrender.com", deploys=None):
         self.service_id = service_id
         self.url = url
         self.env = []
@@ -158,24 +161,40 @@ class AppRender:
 
 
 class AppSiteTest(unittest.TestCase):
-    def test_topic_selects_the_repo_name_and_leaves_other_repos_alone(self):
-        self.assertEqual(app_service_name("eriklydecker", "clipshare", ["nordman-app"]), "clipshare")
+    def test_topic_selects_the_namespaced_site_and_leaves_other_repos_alone(self):
+        self.assertEqual(app_service_name("eriklydecker", "clipshare", ["nordman-app"]), SITE)
+        self.assertEqual(app_service_name("ErikLydecker", "ClipShare", ["nordman-app"]), SITE)
         self.assertIsNone(app_service_name("eriklydecker", "clipshare", []))
         self.assertIsNone(app_service_name("Nordman", "chat", ["nordman-app"]))
         self.assertIsNone(app_service_name("Nordman", "web", ["nordman-app"]))
         self.assertIsNone(app_service_name("eriklydecker", "nordman-grund", ["nordman-app"]))
-        self.assertIsNone(app_service_name("eriklydecker", "ClipShare", ["nordman-app"]))
 
-    def test_first_push_creates_one_free_static_site_named_as_the_repo(self):
+    def test_service_file_pins_the_same_site_and_a_bare_name_is_ignored(self):
+        pinned = app_service_name(
+            "eriklydecker", "clipshare", ["nordman-app"], f"  {SITE}  \n"
+        )
+        self.assertEqual(pinned, SITE)
+        bare = app_service_name("eriklydecker", "clipshare", ["nordman-app"], "clipshare\n")
+        self.assertEqual(bare, SITE)
+
+    def test_long_name_is_cut_to_63_and_loses_a_trailing_hyphen(self):
+        owner = "a" * 54
+        self.assertEqual(len(f"nordman-{owner}-"), 63)
+        name = default_app_service_name(owner, "clipshare")
+        self.assertEqual(name, f"nordman-{owner}")
+        self.assertLessEqual(len(name), 63)
+        self.assertFalse(name.endswith("-"))
+
+    def test_first_push_creates_one_free_static_site_named_for_the_owner_and_repo(self):
         render = AppRender()
         outcome = ensure_app_site(
-            render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com/", "tea-workspace"
+            render, SITE, "eriklydecker", "clipshare", SHA, "deploy-token", "https://nordman-grund.onrender.com/", "tea-workspace"
         )
         self.assertEqual(outcome, "created")
         self.assertEqual(len(render.created), 1)
         payload = render.created[0]
         self.assertEqual(payload["type"], "static_site")
-        self.assertEqual(payload["name"], "clipshare")
+        self.assertEqual(payload["name"], SITE)
         self.assertEqual(payload["autoDeployTrigger"], "off")
         self.assertNotIn("autoDeploy", payload)
         self.assertNotIn("plan", payload)
@@ -192,7 +211,7 @@ class AppSiteTest(unittest.TestCase):
     def test_later_push_updates_the_same_service(self):
         render = AppRender(service_id="srv-clipshare", revision=OLDER)
         outcome = ensure_app_site(
-            render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+            render, SITE, "eriklydecker", "clipshare", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
         )
         self.assertEqual(outcome, "started")
         self.assertEqual(render.created, [])
@@ -214,24 +233,24 @@ class AppSiteTest(unittest.TestCase):
         render.env.append({"key": "GRUND_DEPLOY_TOKEN", "value": "deploy-token"})
         render.env.append({"key": "NODE_VERSION", "value": "22"})
         outcome = ensure_app_site(
-            render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+            render, SITE, "eriklydecker", "clipshare", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
         )
         self.assertEqual(outcome, "already")
         self.assertEqual(render.triggers, 0)
         self.assertEqual(render.created, [])
 
     def test_wrong_hostname_is_not_kept(self):
-        render = AppRender(url="https://clipshare-abcd.onrender.com")
+        render = AppRender(url=f"https://{SITE}-abcd.onrender.com")
         with self.assertRaises(RuntimeError):
             ensure_app_site(
-                render, "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+                render, SITE, "eriklydecker", "clipshare", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
             )
         self.assertEqual(render.deleted, ["srv-clipshare"])
         self.assertEqual(render.triggers, 0)
 
     def test_payload_pins_the_commit_the_site_must_fetch(self):
         payload = static_site_payload(
-            "clipshare", "eriklydecker", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
+            SITE, "eriklydecker", "clipshare", SHA, "deploy-token", "https://nordman-grund.onrender.com", "tea-workspace"
         )
         values = {item["key"]: item["value"] for item in payload["envVars"]}
         self.assertEqual(values["GRUND_SOURCE_REVISION"], SHA)

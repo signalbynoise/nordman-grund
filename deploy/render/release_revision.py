@@ -4,7 +4,8 @@
 A push of chat or web main calls this from Gitea's post-receive hook and
 redeploys that existing service. A push of main on any other repo whose
 topics include nordman-app creates or updates one free static site named
-exactly as the repo, serving that commit's tree at https://{repo}.onrender.com.
+nordman-{owner}-{repo}. A commit that contains .nordman-service uses that
+file's line as the service name instead.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ PROTECTED_SERVICES = {"nordman-grund", "nordman-chat", "nordman-web"}
 BOOTSTRAP_REPO = "https://github.com/signalbynoise/nordman-grund"
 APP_BUILD = "node deploy/render/publish-app-site.mjs"
 APP_PUBLISH_PATH = ".nordman-site"
+APP_SERVICE_FILE = ".nordman-service"
 DEFAULT_ORIGIN = "https://nordman-grund.onrender.com"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -156,19 +158,54 @@ def parse_topics(value: str) -> list[str]:
     return [part.strip().lower() for part in value.split(",") if part.strip()]
 
 
-def app_service_name(owner: str, repo: str, topics: list[str]) -> str | None:
-    # Platform repos keep their existing services. An app site is the repo name
-    # itself, which is the hostname Chat already promised.
-    name = repo.strip()
-    if service_from_names(owner, name) or name.lower().endswith(".wiki"):
+def default_app_service_name(owner: str, repo: str) -> str:
+    # Render service names are at most 63 characters. A cut can land on the
+    # hyphen between owner and repo, and a trailing hyphen is not a valid slug.
+    return f"nordman-{owner}-{repo}"[:63].rstrip("-")
+
+
+def pinned_service_name(text: str) -> str | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) != 1:
         return None
-    if name in PROTECTED_SERVICES or name.lower() in PROTECTED_SERVICES:
+    name = lines[0]
+    if not name.startswith("nordman-") or name in PROTECTED_SERVICES or not APP_SLUG.fullmatch(name):
+        return None
+    return name
+
+
+def app_service_name(owner: str, repo: str, topics: list[str], service_file: str | None = None) -> str | None:
+    owner_name = owner.strip().lower()
+    repo_name = repo.strip().lower()
+    if service_from_names(owner_name, repo_name) or repo_name.endswith(".wiki"):
+        return None
+    if repo_name in PROTECTED_SERVICES:
         return None
     if APP_TOPIC not in {topic.strip().lower() for topic in topics}:
         return None
-    if not APP_SLUG.fullmatch(name):
+    if not APP_SLUG.fullmatch(owner_name) or not APP_SLUG.fullmatch(repo_name):
+        return None
+    if service_file is not None:
+        pinned = pinned_service_name(service_file)
+        if pinned:
+            return pinned
+    name = default_app_service_name(owner_name, repo_name)
+    if name in PROTECTED_SERVICES or not APP_SLUG.fullmatch(name):
         return None
     return name
+
+
+def commit_service_file(git_dir: str, sha: str) -> str | None:
+    if not git_dir or not SHA.fullmatch(sha):
+        return None
+    try:
+        return subprocess.check_output(
+            ["git", f"--git-dir={git_dir}", "show", f"{sha}:{APP_SERVICE_FILE}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def main_shas(text: str) -> list[str]:
@@ -183,26 +220,26 @@ def main_shas(text: str) -> list[str]:
     return found
 
 
-def app_env(origin: str, owner: str, name: str, sha: str, token: str) -> dict[str, str]:
+def app_env(origin: str, owner: str, repo: str, sha: str, token: str) -> dict[str, str]:
     return {
         "GRUND_URL": origin.rstrip("/"),
         "GRUND_OWNER": owner,
-        "GRUND_NAME": name,
+        "GRUND_NAME": repo,
         "GRUND_DEPLOY_TOKEN": token,
         "GRUND_SOURCE_REVISION": sha,
         "NODE_VERSION": "22",
     }
 
 
-def static_site_payload(name: str, owner: str, sha: str, token: str, origin: str, workspace: str) -> dict:
+def static_site_payload(service: str, owner: str, repo: str, sha: str, token: str, origin: str, workspace: str) -> dict:
     return {
         "type": "static_site",
-        "name": name,
+        "name": service,
         "ownerId": workspace,
         "repo": BOOTSTRAP_REPO,
         "branch": "main",
         "autoDeployTrigger": "off",
-        "envVars": [{"key": key, "value": value} for key, value in app_env(origin, owner, name, sha, token).items()],
+        "envVars": [{"key": key, "value": value} for key, value in app_env(origin, owner, repo, sha, token).items()],
         "serviceDetails": {
             "buildCommand": APP_BUILD,
             "publishPath": APP_PUBLISH_PATH,
@@ -231,22 +268,22 @@ def upsert_env(render: Render, service_id: str, values: dict[str, str]) -> bool:
     return changed
 
 
-def ensure_app_site(render: Render, name: str, owner: str, sha: str, token: str, origin: str, workspace: str) -> str:
+def ensure_app_site(render: Render, service: str, owner: str, repo: str, sha: str, token: str, origin: str, workspace: str) -> str:
     if not SHA.fullmatch(sha):
         raise RuntimeError("revision must be the full commit SHA")
-    expected = f"https://{name}.onrender.com"
+    expected = f"https://{service}.onrender.com"
     render.redactions.append(token)
-    service_id = render.find_service_id(name)
+    service_id = render.find_service_id(service)
     created = service_id is None
     if created:
-        service_id = render.create_static_site(static_site_payload(name, owner, sha, token, origin, workspace))
+        service_id = render.create_static_site(static_site_payload(service, owner, repo, sha, token, origin, workspace))
     url = render.service_url(service_id).rstrip("/")
     if url != expected:
         if created:
             render.delete_service(service_id)
-        raise RuntimeError(f"{name} is {url or 'missing'}, expected {expected}")
-    upsert_env(render, service_id, app_env(origin, owner, name, sha, token))
-    outcome = pin_and_deploy(render, name, sha)
+        raise RuntimeError(f"{service} is {url or 'missing'}, expected {expected}")
+    upsert_env(render, service_id, app_env(origin, owner, repo, sha, token))
+    outcome = pin_and_deploy(render, service, sha)
     if created:
         return "created"
     return outcome
@@ -474,7 +511,7 @@ def schedule_topic_recheck(owner: str, repo: str, sha: str) -> None:
         log.close()
 
 
-def release_targets(render: Render, services: list[tuple[str, str]], owner: str, repo: str, shas: list[str]) -> int:
+def release_targets(render: Render, services: list[tuple[str, str]], owner: str, repo: str, shas: list[str], git_dir: str = "") -> int:
     failed = False
     for service, sha in services:
         try:
@@ -493,8 +530,7 @@ def release_targets(render: Render, services: list[tuple[str, str]], owner: str,
         failed = True
         print(f"[warn] [grund:release] {repo} {render.redact(str(error))}", file=sys.stderr)
         return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
-    name = app_service_name(owner, repo, topics)
-    if not name:
+    if not app_service_name(owner, repo, topics):
         for sha in shas:
             schedule_topic_recheck(owner, repo, sha)
         return 0
@@ -503,7 +539,10 @@ def release_targets(render: Render, services: list[tuple[str, str]], owner: str,
         return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
     for sha in shas:
         try:
-            outcome = ensure_app_site(render, name, owner, sha, token, grund_origin(), workspace_id())
+            name = app_service_name(owner, repo, topics, commit_service_file(git_dir, sha))
+            if not name:
+                continue
+            outcome = ensure_app_site(render, name, owner, repo, sha, token, grund_origin(), workspace_id())
             print(outcome)
             print(f"[info] [grund:release] {name} {sha} {outcome}", file=sys.stderr)
         except Exception as error:
@@ -554,7 +593,7 @@ def main(argv: list[str]) -> int:
             print("[warn] [grund:release] RENDER_API_KEY is not set", file=sys.stderr)
             return 1 if os.environ.get("NORDMAN_RELEASE_STRICT") == "1" else 0
         return 0
-    return release_targets(Render(key), pairs, owner, repo, shas)
+    return release_targets(Render(key), pairs, owner, repo, shas, git_dir)
 
 
 if __name__ == "__main__":
