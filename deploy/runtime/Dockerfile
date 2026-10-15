@@ -26,10 +26,12 @@ RUN curl -fsSL https://github.com/temporalio/cli/releases/download/v1.5.1/tempor
   && chmod 0755 /usr/local/bin/temporal \
   && rm -f /tmp/temporal.tar.gz
 
-# Install OpenHands SDK v1.54.0 + OpenHands Tools in isolated runtime venv
-RUN uv venv /opt/openhands-venv --python python3 \
+# Install OpenHands SDK v1.54.0 + OpenHands Tools in isolated runtime venv (Python 3.12 managed by uv)
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN uv python install 3.12 \
+  && uv venv /opt/openhands-venv --python 3.12 \
   && uv pip install --python /opt/openhands-venv/bin/python --no-cache openhands-sdk==1.54.0 openhands-tools==1.54.0 \
-  && chmod -R a+rX /opt/openhands-venv
+  && chmod -R a+rX /opt/uv-python /opt/openhands-venv
 
 COPY deploy/runtime/nordman-linux-sandbox.c /tmp/nordman-linux-sandbox.c
 RUN gcc -O2 -Wall /tmp/nordman-linux-sandbox.c -o /usr/local/bin/nordman-linux-sandbox \
